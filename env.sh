@@ -1,1 +1,1 @@
-GOPATH=`pwd`
+export GOPATH=`pwd`
