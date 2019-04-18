@@ -1,9 +1,10 @@
 package raft
 
 import (
-    "fmt"
+    _ "fmt"
     "time"
     "math/rand"
+    _ "log"
 )
 
 
@@ -30,71 +31,6 @@ import "labrpc"
 // import "bytes"
 // import "labgob"
 
-
-
-//
-// as each Raft peer becomes aware that successive log entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
-//
-// in Lab 3 you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh; at that point you can add fields to
-// ApplyMsg, but set CommandValid to false for these other uses.
-//
-type ApplyMsg struct {
-    CommandValid bool
-    Command      interface{}
-    CommandIndex int
-}
-
-type NodeState int
-
-const (
-    UNKNOWN   NodeState = 0
-    LEADER    NodeState = 1
-    CANDIDATE NodeState = 2
-    FOLLOWER  NodeState = 3
-)
-
-func (state NodeState) ToString() string {
-    switch state {
-    case UNKNOWN:
-        return "UNKNOWN"
-    case LEADER:
-        return "LEADER"
-    case CANDIDATE:
-        return "CANDIDATE"
-    case FOLLOWER:
-        return "FOLLOWER"
-    default:
-        return fmt.Sprintf("error state: %d", int(state))
-    }
-}
-
-type AppendEntriesArgs struct {
-    Term     int
-    LeaderId int
-
-    PrevLogIndex int
-    PrevLogTerm  int
-
-    // entries[]
-    LeaderCommit int
-}
-
-type AppendEntriesReply struct {
-    Term int
-    Success bool
-    LeaderId int
-
-    PrevLogIndex int
-    PrevLogTerm int
-
-    LeaderCommit int
-}
-
 //
 // A Go object implementing a single Raft peer.
 //
@@ -113,6 +49,8 @@ type Raft struct {
     votedFor int
     voteACK int
     state    NodeState
+    running bool
+    exit bool
 
     // log[]
 
@@ -175,9 +113,6 @@ func (rf *Raft) readPersist(data []byte) {
     //   rf.yyy = yyy
     // }
 }
-
-
-
 
 //
 // example RequestVote RPC arguments structure.
@@ -277,6 +212,8 @@ func (rf *Raft) sendHeartbeat() {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+    rf.mu.Lock()
+    defer rf.mu.Unlock()
     if (args.Term < rf.currentTerm) {
         DPrintf("Node[%d] AppendEntries failed, term expected[%d], actual[%d]",
             rf.me, rf.currentTerm, args.Term)
@@ -286,9 +223,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
     } else if (args.Term > rf.currentTerm) {
         DPrintf("Node[%d] AppendEntries failed, term expected[%d], actual[%d]",
             rf.me, rf.currentTerm, args.Term)
-
-        rf.mu.Lock()
-        defer rf.mu.Unlock()
 
         rf.currentTerm = args.Term
         rf.commitIndex = args.LeaderCommit // really?
@@ -305,10 +239,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
         reply.Success = false
     } else {
-        rf.mu.Lock()
-        defer rf.mu.Unlock()
+        if (rf.state == LEADER || rf.state == CANDIDATE) {
+            rf.updateStateTo(FOLLOWER);
+        }
 
-        // rf.LeaderId = args.LeaderId
+        rf.LeaderId = args.LeaderId
 
         if (args.LeaderCommit > rf.commitIndex) {
             rf.commitIndex = args.LeaderCommit // really?
@@ -387,7 +322,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // turn off debug output from this instance.
 //
 func (rf *Raft) Kill() {
-    // Your code here, if desired.
+    /*
+    rf.running = false
+    for !rf.exit {
+        time.Sleep(1000 * time.Millisecond);
+    }
+    time.Sleep(1000 * time.Millisecond);
+    */
 }
 
 func (rf *Raft) startElection() {
@@ -432,10 +373,8 @@ func (rf *Raft) restartElection() {
             var reply RequestVoteReply
             rf.sendRequestVote(server, &args, &reply)
 
-            DPrintf("ask for lock")
             rf.mu.Lock()
             defer rf.mu.Unlock()
-            DPrintf("get the lock")
             if (rf.state == CANDIDATE && reply.VoteGranted && reply.Term == currentTerm) {
                 DPrintf("Node[%d] get voteACK from node %d", rf.me, reply.VoteFrom)
                 rf.voteACK += 1
@@ -479,7 +418,8 @@ func (rf *Raft) renewTimer(timeout time.Duration) {
 
 
 func (rf *Raft) process() {
-    DPrintf("Node[%d] is processing, state: [%s]", rf.me, rf.state.ToString());
+    DPrintf("Node[%d] is processing, state: [%s], term %d, leader %d", 
+            rf.me, rf.state.ToString(), rf.currentTerm, rf.LeaderId);
     switch rf.state {
     case LEADER:
         rf.sendHeartbeat()
@@ -509,6 +449,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
     rf.me = me
 
     // Your initialization code here (2A, 2B, 2C).
+    rf.LeaderId = -1
     rf.currentTerm = 0
     rf.commitIndex = 0
     rf.lastApplied = 0
@@ -523,9 +464,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
     // no need to block the channel
 
     rf.updateStateTo(FOLLOWER)
+    rf.running = true;
+    rf.exit = false
+
+    // initialize from state persisted before a crash
+    rf.readPersist(persister.ReadRaftState())
 
     go func() {
-        for {
+        for rf.running {
             DPrintf("Node[%d] is %s, term %d, leader %d",
                 rf.me, rf.state.ToString(), rf.currentTerm, rf.LeaderId)
             select {
@@ -533,12 +479,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
                 rf.process()
             }
         }
+        rf.exit = true
     }()
 
 
 
-    // initialize from state persisted before a crash
-    rf.readPersist(persister.ReadRaftState())
 
 
     return rf
