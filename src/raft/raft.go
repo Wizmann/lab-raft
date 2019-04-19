@@ -383,7 +383,7 @@ func (rf *Raft) restartElection() {
                     rf.updateStateTo(LEADER)
                     rf.LeaderId = rf.me
                 }
-            } else if (reply.Term > currentTerm) {
+            } else if (rf.state == LEADER && reply.Term > currentTerm) {
                 rf.updateStateTo(FOLLOWER)
             }
         }(i, currentTerm)
@@ -412,7 +412,6 @@ func (rf *Raft) renewTimer(timeout time.Duration) {
             }
         }
         rf.timer.Reset(timeout)
-        DPrintf("Node[%d] renew timer %d ms", rf.me, timeout / 1000000)
     }
 }
 
