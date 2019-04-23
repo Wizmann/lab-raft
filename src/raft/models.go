@@ -2,7 +2,45 @@ package raft
 
 import (
     "fmt"
+    "sync"
+    "labrpc"
+    "time"
 )
+
+//
+// A Go object implementing a single Raft peer.
+//
+type Raft struct {
+    mu        sync.Mutex          // Lock to protect shared access to this peer's state
+    peers     []*labrpc.ClientEnd // RPC end points of all peers
+    persister *Persister          // Object to hold this peer's persisted state
+    me        int                 // this peer's index into peers[]
+
+    // Your data here (2A, 2B, 2C).
+    // Look at the paper's Figure 2 for a description of what
+    // state a Raft server must maintain.
+
+    LeaderId int
+    currentTerm int
+    votedFor int
+    voteACK int
+    state    NodeState
+    running bool
+    exit bool
+
+    Entries []LogEntry
+
+    commitIndex int // log to be committed
+    lastApplied int // log have been committed to the state machine
+
+    timer *time.Timer
+
+    heartbeat_timeout time.Duration
+    election_timeout time.Duration
+
+
+    applyCh chan ApplyMsg
+}
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -77,4 +115,23 @@ type AppendEntriesReply struct {
     Entries []LogEntry
 
     LeaderCommit int
+}
+
+//
+// example RequestVote RPC arguments structure.
+// field names must start with capital letters!
+//
+type RequestVoteArgs struct {
+    // Your data here (2A, 2B).
+    Term int
+    CandidateId int
+    LastLogIndex int
+    LastLogTerm int
+}
+
+type RequestVoteReply struct {
+    Term int
+    VoteGranted bool
+
+    VoteFrom int // for log
 }

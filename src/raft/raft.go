@@ -25,46 +25,10 @@ import (
 //   in the same server.
 //
 
-import "sync"
 import "labrpc"
 
 // import "bytes"
 // import "labgob"
-
-//
-// A Go object implementing a single Raft peer.
-//
-type Raft struct {
-    mu        sync.Mutex          // Lock to protect shared access to this peer's state
-    peers     []*labrpc.ClientEnd // RPC end points of all peers
-    persister *Persister          // Object to hold this peer's persisted state
-    me        int                 // this peer's index into peers[]
-
-    // Your data here (2A, 2B, 2C).
-    // Look at the paper's Figure 2 for a description of what
-    // state a Raft server must maintain.
-
-    LeaderId int
-    currentTerm int
-    votedFor int
-    voteACK int
-    state    NodeState
-    running bool
-    exit bool
-
-    Entries []LogEntry
-
-    commitIndex int // log to be committed
-    lastApplied int // log have been committed to the state machine
-
-    timer *time.Timer
-
-    heartbeat_timeout time.Duration
-    election_timeout time.Duration
-
-
-    applyCh chan ApplyMsg
-}
 
 // return currentTerm and whether this server
 // believes it is the leader.
@@ -116,29 +80,6 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 //
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
-type RequestVoteArgs struct {
-    // Your data here (2A, 2B).
-    Term int
-    CandidateId int
-    LastLogIndex int
-    LastLogTerm int
-}
-
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
-type RequestVoteReply struct {
-    Term int
-    VoteGranted bool
-
-    VoteFrom int // for log
-}
-
-//
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -151,7 +92,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
         return
     }
 
-    if (args.Term > rf.currentTerm) {
+    DPrintf("Node[%d] RequestVote from Node[%d] [%d,%d,%d], current [%d,%d,%d]",
+            rf.me, args.CandidateId, 
+            args.Term, args.LastLogTerm, args.LastLogIndex,
+            rf.currentTerm, rf.GetLastLogTerm(), rf.GetLastLogIndex())
+
+    if (args.Term > rf.currentTerm &&
+            args.LastLogTerm >= rf.GetLastLogTerm() &&
+            args.LastLogIndex >= rf.GetLastLogIndex()) {
         rf.currentTerm = args.Term
         rf.votedFor = args.CandidateId
 
@@ -178,6 +126,8 @@ func (rf *Raft) updateStateTo(newState NodeState) {
     case CANDIDATE:
         rf.renewTimer(rf.getRandomRestartElectionTimeout())
     case FOLLOWER:
+        rf.commitIndex = rf.lastApplied
+        rf.Entries = rf.Entries[:rf.lastApplied + 1]
         rf.renewTimer(rf.election_timeout)
     }
 }
@@ -206,9 +156,8 @@ func (rf *Raft) sendAppendEntries(args *AppendEntriesArgs) {
                     logIndex := logEntry.Index;
                     rf.Entries[logIndex].AckCount += 1
                     for (rf.lastApplied + 1 <= rf.commitIndex) {
-                        if (rf.Entries[rf.lastApplied + 1].AckCount >= len(rf.peers)) {// FIXME
-                            rf.ackMessage(rf.lastApplied + 1)
-                            rf.lastApplied += 1;
+                        if (rf.Entries[rf.lastApplied + 1].AckCount * 2 > len(rf.peers)) {
+                            rf.ackMessages(rf.lastApplied + 1)
                         } else {
                             break;
                         }
@@ -244,7 +193,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
             rf.me, rf.currentTerm, args.Term)
 
         rf.currentTerm = args.Term
-        // rf.commitIndex = args.LeaderCommit // really?
         rf.LeaderId = args.LeaderId
 
         switch (rf.state) {
@@ -266,12 +214,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
         prevLog := rf.Entries[rf.commitIndex];
 
         if (len(args.Entries) == 0) {
-            for args.LeaderCommit >= rf.lastApplied + 1 {
-                rf.ackMessage(rf.lastApplied + 1)
-                rf.lastApplied += 1
-            }
-
+            rf.ackMessages(args.LeaderCommit);
             reply.Success = true
+            if (rf.lastApplied != args.LeaderCommit) {
+                reply.Success = false;
+                reply.PrevLogTerm = rf.GetLastLogTerm();
+                reply.PrevLogIndex = rf.GetLastLogIndex();
+            }
             DPrintf("Node[%d] get heartbeat from Node[%d], LeaderCommit:%d, LastApplied:%d",
                 rf.me, args.LeaderId, args.LeaderCommit, rf.lastApplied);
         } else if (prevLog.Term != args.PrevLogTerm || prevLog.Index != args.PrevLogIndex) {
@@ -284,39 +233,47 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
             DPrintf("Node[%d] Get %d entries from Node[%d], LeaderCommit:%d, LastApplied:%d",
                 rf.me, len(args.Entries), args.LeaderId, args.LeaderCommit, rf.lastApplied);
 
-            for args.LeaderCommit >= rf.lastApplied + 1 {
-                rf.ackMessage(rf.lastApplied + 1)
-                rf.lastApplied += 1
-            }
+            rf.ackMessages(args.LeaderCommit)
 
-            n := len(args.Entries)
-            for i := 0; i < n; i++ {
-                entry := args.Entries[i];
-                rf.Entries = append(rf.Entries, entry)
-                rf.currentTerm = entry.Term;
-                rf.commitIndex += 1;
-                if (rf.commitIndex != entry.Index) {
-                    panic("log index not continuous");
+            if (rf.lastApplied != args.LeaderCommit) {
+                reply.Success = false;
+                reply.PrevLogTerm = rf.GetLastLogTerm();
+                reply.PrevLogIndex = rf.GetLastLogIndex();
+            } else {
+                for _, entry := range args.Entries {
+                    rf.Entries = append(rf.Entries, entry)
+                    rf.currentTerm = entry.Term;
+                    rf.commitIndex += 1;
+                    if (rf.commitIndex != entry.Index) {
+                        panic("log index not continuous");
+                    }
+                    reply.Entries = append(reply.Entries, entry)
                 }
-                reply.Entries = append(reply.Entries, entry)
+                reply.Success = true
             }
-            reply.Success = true
         }
 
         rf.renewTimer(rf.election_timeout)
     }
 }
 
-func (rf *Raft) ackMessage(applyIndex int) {
-    DPrintf("Node[%d] ack message [%d,%d]",
-            rf.me, rf.Entries[applyIndex].Term, rf.Entries[applyIndex].Index);
-    msg := ApplyMsg {
-        CommandValid: true,
-        Command: rf.Entries[applyIndex].Command,
-        CommandIndex: applyIndex,
-    };
+func (rf *Raft) ackMessages(leaderCommit int) {
+    DPrintf("Node[%d] ack message with leaderCommit: %d, rf status: [%d,%d]",
+            rf.me, leaderCommit, rf.commitIndex, rf.lastApplied);
 
-    rf.applyCh <- msg
+    for leaderCommit >= rf.lastApplied + 1 && rf.commitIndex >= rf.lastApplied + 1 {
+        msg := ApplyMsg {
+            CommandValid: true,
+            Command: rf.Entries[rf.lastApplied + 1].Command,
+            CommandIndex: rf.lastApplied + 1,
+        };
+
+        rf.applyCh <- msg
+
+        DPrintf("Node[%d] ack message [%d,%d]",
+                rf.me, rf.Entries[rf.lastApplied + 1].Term, rf.Entries[rf.lastApplied + 1].Index);
+        rf.lastApplied += 1
+    }
 }
 
 
@@ -434,6 +391,14 @@ func (rf *Raft) Kill() {
     // pass
 }
 
+func (rf *Raft) GetLastLogTerm() int {
+    return rf.Entries[rf.commitIndex].Term;
+}
+
+func (rf *Raft) GetLastLogIndex() int {
+    return rf.Entries[rf.commitIndex].Index;
+}
+
 func (rf *Raft) startElection() {
     rf.LeaderId = -1
     rf.votedFor = -1
@@ -453,9 +418,8 @@ func (rf *Raft) restartElection() {
     rf.LeaderId = -1
     rf.votedFor = rf.me
     rf.voteACK = 1
-    rf.currentTerm += 1
 
-    currentTerm := rf.currentTerm
+    currentTerm := rf.currentTerm + 1
 
     for i, _ := range rf.peers {
         if (i == rf.me) {
@@ -463,13 +427,11 @@ func (rf *Raft) restartElection() {
         }
 
         go func(server int, currentTerm int) {
-            if (rf.currentTerm != currentTerm) {
-                return;
-            }
-
             args := RequestVoteArgs {
                 Term : currentTerm,
                 CandidateId : rf.me,
+                LastLogTerm: rf.GetLastLogTerm(),
+                LastLogIndex: rf.GetLastLogIndex(),
             }
 
             var reply RequestVoteReply
@@ -477,6 +439,7 @@ func (rf *Raft) restartElection() {
 
             rf.mu.Lock()
             defer rf.mu.Unlock()
+
             if (rf.state == CANDIDATE && reply.VoteGranted && reply.Term == currentTerm) {
                 DPrintf("Node[%d] get voteACK from node %d", rf.me, reply.VoteFrom)
                 rf.voteACK += 1
@@ -484,8 +447,9 @@ func (rf *Raft) restartElection() {
                     rf.sendHeartbeat()
                     rf.updateStateTo(LEADER)
                     rf.LeaderId = rf.me
+                    rf.currentTerm = reply.Term
                 }
-            } else if (rf.state == LEADER && reply.Term > currentTerm) {
+            } else if (rf.state == LEADER && reply.Term > rf.currentTerm) {
                 rf.updateStateTo(FOLLOWER)
             }
         }(i, currentTerm)
@@ -519,8 +483,8 @@ func (rf *Raft) renewTimer(timeout time.Duration) {
 
 
 func (rf *Raft) process() {
-    DPrintf("Node[%d] is processing, state: [%s], term %d, commitIndex: %d, leader %d", 
-            rf.me, rf.state.ToString(), rf.currentTerm, rf.commitIndex, rf.LeaderId);
+    DPrintf("Node[%d] is processing, state: [%s], term %d, commitIndex: %d, lastApplied: %d, leader %d", 
+            rf.me, rf.state.ToString(), rf.currentTerm, rf.commitIndex, rf.lastApplied, rf.LeaderId);
     switch rf.state {
     case LEADER:
         rf.sendHeartbeat()
