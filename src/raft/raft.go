@@ -52,10 +52,10 @@ type Raft struct {
     running bool
     exit bool
 
-    // log[]
+    Entries []LogEntry
 
-    commitIndex int
-    lastApplied int
+    commitIndex int // log to be committed
+    lastApplied int // log have been committed to the state machine
 
     timer *time.Timer
 
@@ -63,6 +63,7 @@ type Raft struct {
     election_timeout time.Duration
 
 
+    applyCh chan ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -196,6 +197,23 @@ func (rf *Raft) sendAppendEntries(args *AppendEntriesArgs) {
 
                     rf.updateStateTo(FOLLOWER)
                 }
+            } else if (len(reply.Entries) > 0) {
+                n := len(reply.Entries);
+                rf.mu.Lock();
+                defer rf.mu.Unlock();
+                for i := 0; i < n; i++ {
+                    logEntry := reply.Entries[i]
+                    logIndex := logEntry.Index;
+                    rf.Entries[logIndex].AckCount += 1
+                    for (rf.lastApplied + 1 <= rf.commitIndex) {
+                        if (rf.Entries[rf.lastApplied + 1].AckCount >= len(rf.peers)) {// FIXME
+                            rf.ackMessage(rf.lastApplied + 1)
+                            rf.lastApplied += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
             }
         }(i)
     }
@@ -206,6 +224,7 @@ func (rf *Raft) sendHeartbeat() {
     args := AppendEntriesArgs {
         Term: rf.currentTerm,
         LeaderId: rf.me,
+        LeaderCommit: rf.lastApplied,
     }
     rf.sendAppendEntries(&args)
     rf.renewTimer(rf.heartbeat_timeout)
@@ -225,7 +244,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
             rf.me, rf.currentTerm, args.Term)
 
         rf.currentTerm = args.Term
-        rf.commitIndex = args.LeaderCommit // really?
+        // rf.commitIndex = args.LeaderCommit // really?
         rf.LeaderId = args.LeaderId
 
         switch (rf.state) {
@@ -244,14 +263,60 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
         }
 
         rf.LeaderId = args.LeaderId
+        prevLog := rf.Entries[rf.commitIndex];
 
-        if (args.LeaderCommit > rf.commitIndex) {
-            rf.commitIndex = args.LeaderCommit // really?
+        if (len(args.Entries) == 0) {
+            for args.LeaderCommit >= rf.lastApplied + 1 {
+                rf.ackMessage(rf.lastApplied + 1)
+                rf.lastApplied += 1
+            }
+
+            reply.Success = true
+            DPrintf("Node[%d] get heartbeat from Node[%d], LeaderCommit:%d, LastApplied:%d",
+                rf.me, args.LeaderId, args.LeaderCommit, rf.lastApplied);
+        } else if (prevLog.Term != args.PrevLogTerm || prevLog.Index != args.PrevLogIndex) {
+            reply.Success = false
+            reply.PrevLogTerm = prevLog.Term;
+            reply.PrevLogIndex = prevLog.Index;
+            DPrintf("Node[%d] get wrong message from node %d, expect(%d,%d), actual(%d,%d)",
+                    rf.me, args.LeaderId, prevLog.Term, prevLog.Index, args.PrevLogTerm, args.PrevLogIndex);
+        } else {
+            DPrintf("Node[%d] Get %d entries from Node[%d], LeaderCommit:%d, LastApplied:%d",
+                rf.me, len(args.Entries), args.LeaderId, args.LeaderCommit, rf.lastApplied);
+
+            for args.LeaderCommit >= rf.lastApplied + 1 {
+                rf.ackMessage(rf.lastApplied + 1)
+                rf.lastApplied += 1
+            }
+
+            n := len(args.Entries)
+            for i := 0; i < n; i++ {
+                entry := args.Entries[i];
+                rf.Entries = append(rf.Entries, entry)
+                rf.currentTerm = entry.Term;
+                rf.commitIndex += 1;
+                if (rf.commitIndex != entry.Index) {
+                    panic("log index not continuous");
+                }
+                reply.Entries = append(reply.Entries, entry)
+            }
+            reply.Success = true
         }
-        DPrintf("Node[%d] get heartbeat from node %d", rf.me, args.LeaderId)
-        reply.Success = true
+
         rf.renewTimer(rf.election_timeout)
     }
+}
+
+func (rf *Raft) ackMessage(applyIndex int) {
+    DPrintf("Node[%d] ack message [%d,%d]",
+            rf.me, rf.Entries[applyIndex].Term, rf.Entries[applyIndex].Index);
+    msg := ApplyMsg {
+        CommandValid: true,
+        Command: rf.Entries[applyIndex].Command,
+        CommandIndex: applyIndex,
+    };
+
+    rf.applyCh <- msg
 }
 
 
@@ -289,7 +354,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
     return ok
 }
 
-
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -305,12 +369,57 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-    index := -1
-    term := -1
-    isLeader := true
+    index := -1;
+    term := -1;
+    isLeader := rf.state == LEADER;
 
-    // Your code here (2B).
+    if (isLeader == false) {
+        return index, term, isLeader
+    }
 
+    rf.mu.Lock()
+    defer rf.mu.Unlock()
+
+    DPrintf("Node[%d] Start sending commands", rf.me);
+
+    prevLogTerm := rf.Entries[rf.commitIndex].Term;
+    prevLogIndex := rf.Entries[rf.commitIndex].Index;
+
+    term = rf.currentTerm
+    index = rf.commitIndex + 1
+    rf.commitIndex += 1
+
+    entry := LogEntry {
+        Term: term,
+        Index: index,
+        AckCount: 1,
+        Command: command,
+    }
+
+    rf.Entries = append(rf.Entries, entry)
+    if (len(rf.Entries) != rf.commitIndex + 1) {
+        DPrintf("rf entries index error, %d != %d", len(rf.Entries), rf.commitIndex + 1);
+        panic("rf entries index error");
+    }
+
+    args := AppendEntriesArgs {
+        Term: term,
+        Index: index,
+        LeaderId: rf.me,
+
+        PrevLogTerm: prevLogTerm,
+        PrevLogIndex: prevLogIndex,
+
+        Entries: []LogEntry { entry },
+
+        LeaderCommit: rf.lastApplied,
+    }
+
+    if (len(args.Entries) != 1) {
+        panic("error on args entires length");
+    }
+
+    rf.sendAppendEntries(&args);
 
     return index, term, isLeader
 }
@@ -322,13 +431,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // turn off debug output from this instance.
 //
 func (rf *Raft) Kill() {
-    /*
-    rf.running = false
-    for !rf.exit {
-        time.Sleep(1000 * time.Millisecond);
-    }
-    time.Sleep(1000 * time.Millisecond);
-    */
+    // pass
 }
 
 func (rf *Raft) startElection() {
@@ -339,14 +442,13 @@ func (rf *Raft) startElection() {
 }
 
 func (rf *Raft) restartElection() {
+    DPrintf("Node[%d] election timeout", rf.me);
     rf.mu.Lock()
     defer rf.mu.Unlock()
 
     if (rf.state != CANDIDATE) {
-        return
+        return;
     }
-
-    DPrintf("Node[%d] election timeout", rf.me);
 
     rf.LeaderId = -1
     rf.votedFor = rf.me
@@ -417,8 +519,8 @@ func (rf *Raft) renewTimer(timeout time.Duration) {
 
 
 func (rf *Raft) process() {
-    DPrintf("Node[%d] is processing, state: [%s], term %d, leader %d", 
-            rf.me, rf.state.ToString(), rf.currentTerm, rf.LeaderId);
+    DPrintf("Node[%d] is processing, state: [%s], term %d, commitIndex: %d, leader %d", 
+            rf.me, rf.state.ToString(), rf.currentTerm, rf.commitIndex, rf.LeaderId);
     switch rf.state {
     case LEADER:
         rf.sendHeartbeat()
@@ -455,6 +557,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
     rf.state = FOLLOWER
     rf.votedFor = -1
     rf.voteACK = 0
+    rf.applyCh = applyCh
+
+    dummyEntry := LogEntry{};
+
+    rf.Entries = append(rf.Entries, dummyEntry);
 
     rf.heartbeat_timeout = time.Duration(200 * time.Millisecond)
     rf.election_timeout = time.Duration(500 * time.Millisecond)
@@ -471,7 +578,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
     go func() {
         for rf.running {
-            DPrintf("Node[%d] is %s, term %d, leader %d",
+            DPrintf("Node[%d] is %s processing, term %d, leader %d",
                 rf.me, rf.state.ToString(), rf.currentTerm, rf.LeaderId)
             select {
             case <- rf.timer.C:
@@ -480,10 +587,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
         }
         rf.exit = true
     }()
-
-
-
-
 
     return rf
 }

@@ -45,14 +45,24 @@ func (state NodeState) ToString() string {
     }
 }
 
+type LogEntry struct {
+    Term    int
+    Index   int
+    AckCount int
+    Command interface{}
+}
+
 type AppendEntriesArgs struct {
-    Term     int
     LeaderId int
 
-    PrevLogIndex int
-    PrevLogTerm  int
+    Term     int
+    Index    int
 
-    // entries[]
+    PrevLogTerm  int
+    PrevLogIndex int
+
+    Entries []LogEntry
+
     LeaderCommit int
 }
 
@@ -61,8 +71,10 @@ type AppendEntriesReply struct {
     Success bool
     LeaderId int
 
-    PrevLogIndex int
     PrevLogTerm int
+    PrevLogIndex int
+
+    Entries []LogEntry
 
     LeaderCommit int
 }
