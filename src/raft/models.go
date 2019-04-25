@@ -94,7 +94,6 @@ type AppendEntriesArgs struct {
     LeaderId int
 
     Term     int
-    Index    int
 
     PrevLogTerm  int
     PrevLogIndex int

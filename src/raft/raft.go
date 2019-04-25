@@ -137,6 +137,11 @@ func (rf *Raft) sendAppendEntries(args *AppendEntriesArgs) {
         if (i == rf.me) {
             continue
         }
+
+        if (rf.state != LEADER) {
+            return;
+        }
+
         go func (server int) {
             var reply AppendEntriesReply
             rf.peers[server].Call("Raft.AppendEntries", args, &reply)
@@ -147,6 +152,7 @@ func (rf *Raft) sendAppendEntries(args *AppendEntriesArgs) {
 
                     rf.updateStateTo(FOLLOWER)
                 }
+                return;
             } else if (len(reply.Entries) > 0) {
                 n := len(reply.Entries);
                 rf.mu.Lock();
@@ -164,8 +170,47 @@ func (rf *Raft) sendAppendEntries(args *AppendEntriesArgs) {
                     }
                 }
             }
+
+            prevLogTerm := reply.PrevLogTerm
+            prevLogIndex := reply.PrevLogIndex
+
+            if (prevLogIndex > rf.commitIndex || rf.Entries[prevLogIndex].Term != prevLogTerm) {
+                DPrintf("Node[%d] prevLogIndex: %d, rf.commitIndex: %d", rf.me, prevLogIndex, rf.commitIndex);
+                // panic("Acked log has conflict");
+                return;
+            }
+
+            if (prevLogIndex < rf.commitIndex) {
+                rf.sendAppendEntriesToNode(server, prevLogTerm, prevLogIndex)
+            }
+
         }(i)
     }
+}
+
+func (rf *Raft) sendAppendEntriesToNode(nodeId int, prevLogTerm int, prevLogIndex int) {
+    rf.mu.Lock()
+    defer rf.mu.Unlock()
+    args := AppendEntriesArgs {
+        Term: rf.currentTerm,
+        LeaderId: rf.me,
+
+        PrevLogTerm: prevLogTerm,
+        PrevLogIndex: prevLogIndex,
+
+        LeaderCommit: rf.lastApplied,
+    }
+
+    for i := prevLogIndex + 1; i <= rf.commitIndex; i++ {
+        args.Entries = append(args.Entries, rf.Entries[i]);
+    }
+
+    DPrintf("Node[%d] Resend log to node %d from %d to %d", rf.me, nodeId, prevLogIndex + 1, rf.commitIndex)
+
+    var reply AppendEntriesReply
+    rf.peers[nodeId].Call("Raft.AppendEntries", &args, &reply)
+
+    // I don't care if it success or not
 }
 
 func (rf *Raft) sendHeartbeat() {
@@ -204,41 +249,44 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
             rf.updateStateTo(FOLLOWER)
         }
 
-        reply.Success = false
+        reply.Success = true;
+        reply.PrevLogTerm = rf.GetLastLogTerm();
+        reply.PrevLogIndex = rf.GetLastLogIndex();
     } else {
         if (rf.state == LEADER || rf.state == CANDIDATE) {
             rf.updateStateTo(FOLLOWER);
         }
 
         rf.LeaderId = args.LeaderId
-        prevLog := rf.Entries[rf.commitIndex];
+
+        if (args.LeaderCommit < rf.commitIndex) {
+            rf.commitIndex = rf.lastApplied;
+            rf.Entries = rf.Entries[:rf.lastApplied + 1]
+        }
 
         if (len(args.Entries) == 0) {
             rf.ackMessages(args.LeaderCommit);
             reply.Success = true
-            if (rf.lastApplied != args.LeaderCommit) {
-                reply.Success = false;
-                reply.PrevLogTerm = rf.GetLastLogTerm();
-                reply.PrevLogIndex = rf.GetLastLogIndex();
-            }
+            reply.PrevLogTerm = rf.GetLastLogTerm();
+            reply.PrevLogIndex = rf.GetLastLogIndex();
             DPrintf("Node[%d] get heartbeat from Node[%d], LeaderCommit:%d, LastApplied:%d",
                 rf.me, args.LeaderId, args.LeaderCommit, rf.lastApplied);
-        } else if (prevLog.Term != args.PrevLogTerm || prevLog.Index != args.PrevLogIndex) {
-            reply.Success = false
-            reply.PrevLogTerm = prevLog.Term;
-            reply.PrevLogIndex = prevLog.Index;
+        } else if (rf.GetLastLogTerm() != args.PrevLogTerm || rf.GetLastLogIndex() != args.PrevLogIndex) {
+            reply.Success = true
+            reply.PrevLogTerm = rf.GetLastLogTerm();
+            reply.PrevLogIndex = rf.GetLastLogIndex();
             DPrintf("Node[%d] get wrong message from node %d, expect(%d,%d), actual(%d,%d)",
-                    rf.me, args.LeaderId, prevLog.Term, prevLog.Index, args.PrevLogTerm, args.PrevLogIndex);
+                    rf.me, args.LeaderId, rf.GetLastLogTerm(), rf.GetLastLogIndex(), args.PrevLogTerm, args.PrevLogIndex);
         } else {
             DPrintf("Node[%d] Get %d entries from Node[%d], LeaderCommit:%d, LastApplied:%d",
                 rf.me, len(args.Entries), args.LeaderId, args.LeaderCommit, rf.lastApplied);
 
             rf.ackMessages(args.LeaderCommit)
 
-            if (rf.lastApplied != args.LeaderCommit) {
-                reply.Success = false;
-                reply.PrevLogTerm = rf.GetLastLogTerm();
-                reply.PrevLogIndex = rf.GetLastLogIndex();
+            reply.Success = true;
+
+            if (rf.commitIndex != args.PrevLogIndex) {
+                // pass
             } else {
                 for _, entry := range args.Entries {
                     rf.Entries = append(rf.Entries, entry)
@@ -249,8 +297,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
                     }
                     reply.Entries = append(reply.Entries, entry)
                 }
-                reply.Success = true
             }
+            reply.PrevLogTerm = rf.GetLastLogTerm();
+            reply.PrevLogIndex = rf.GetLastLogIndex();
         }
 
         rf.renewTimer(rf.election_timeout)
@@ -258,9 +307,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) ackMessages(leaderCommit int) {
-    DPrintf("Node[%d] ack message with leaderCommit: %d, rf status: [%d,%d]",
-            rf.me, leaderCommit, rf.commitIndex, rf.lastApplied);
-
     for leaderCommit >= rf.lastApplied + 1 && rf.commitIndex >= rf.lastApplied + 1 {
         msg := ApplyMsg {
             CommandValid: true,
@@ -274,6 +320,9 @@ func (rf *Raft) ackMessages(leaderCommit int) {
                 rf.me, rf.Entries[rf.lastApplied + 1].Term, rf.Entries[rf.lastApplied + 1].Index);
         rf.lastApplied += 1
     }
+
+    DPrintf("Node[%d] acked message with leaderCommit: %d, rf status: [%d,%d]",
+            rf.me, leaderCommit, rf.commitIndex, rf.lastApplied);
 }
 
 
@@ -361,7 +410,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
     args := AppendEntriesArgs {
         Term: term,
-        Index: index,
         LeaderId: rf.me,
 
         PrevLogTerm: prevLogTerm,
