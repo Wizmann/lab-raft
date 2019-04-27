@@ -25,19 +25,19 @@ type Raft struct {
     votedFor int
     voteACK int
     state    NodeState
-    running bool
-    exit bool
 
     Entries []LogEntry
 
     commitIndex int // log to be committed
-    lastApplied int // log have been committed to the state machine
+    lastApplied int // acked log have been committed to the state machine
+
+    NextIndex []int
+    MatchIndex []int
 
     timer *time.Timer
 
     heartbeat_timeout time.Duration
     election_timeout time.Duration
-
 
     applyCh chan ApplyMsg
 }
@@ -86,8 +86,8 @@ func (state NodeState) ToString() string {
 type LogEntry struct {
     Term    int
     Index   int
-    AckCount int
     Command interface{}
+    LogId string // used to identify the log entry other than (term, index), for test only
 }
 
 type AppendEntriesArgs struct {
@@ -112,8 +112,6 @@ type AppendEntriesReply struct {
     PrevLogIndex int
 
     Entries []LogEntry
-
-    LeaderCommit int
 }
 
 //
@@ -121,7 +119,6 @@ type AppendEntriesReply struct {
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
-    // Your data here (2A, 2B).
     Term int
     CandidateId int
     LastLogIndex int
