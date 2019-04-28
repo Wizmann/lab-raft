@@ -114,21 +114,21 @@ func TestFailAgree2B(t *testing.T) {
 
     cfg.one(101, servers, false)
 
-    // follower network disconnection
+    DPrintf("follower network disconnection");
     leader := cfg.checkOneLeader()
     cfg.disconnect((leader + 1) % servers)
 
-    // agree despite one disconnected server?
+    DPrintf("agree despite one disconnected server?");
     cfg.one(102, servers-1, false)
     cfg.one(103, servers-1, false)
     time.Sleep(RaftElectionTimeout)
     cfg.one(104, servers-1, false)
     cfg.one(105, servers-1, false)
 
-    // re-connect
+    DPrintf("re-connect");
     cfg.connect((leader + 1) % servers)
 
-    // agree with full set of servers?
+    DPrintf("agree with full set of servers?");
     cfg.one(106, servers, true)
     time.Sleep(RaftElectionTimeout)
     cfg.one(107, servers, true)
@@ -145,7 +145,7 @@ func TestFailNoAgree2B(t *testing.T) {
 
     cfg.one(10, servers, false)
 
-    // 3 of 5 followers disconnect
+    DPrintf("3 of 5 followers disconnect");
     leader := cfg.checkOneLeader()
     cfg.disconnect((leader + 1) % servers)
     cfg.disconnect((leader + 2) % servers)
@@ -166,13 +166,12 @@ func TestFailNoAgree2B(t *testing.T) {
         t.Fatalf("%v committed but no majority", n)
     }
 
-    // repair
+    DPrintf("repair")
     cfg.connect((leader + 1) % servers)
     cfg.connect((leader + 2) % servers)
     cfg.connect((leader + 3) % servers)
 
-    // the disconnected majority may have chosen a leader from
-    // among their own ranks, forgetting index 2.
+    DPrintf("the disconnected majority may have chosen a leader from among their own ranks, forgetting index 2.")
     leader2 := cfg.checkOneLeader()
     index2, _, ok2 := cfg.rafts[leader2].Start(30)
     if ok2 == false {
