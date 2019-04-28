@@ -6,7 +6,7 @@ go:
 sudo: required
 
 install:
-  - apt-get install realpath
+  - sudo apt-get install realpath
   - export GOPATH=$HOME/gopath/src/github.com/Wizmann/lab-raft
  
 script:
