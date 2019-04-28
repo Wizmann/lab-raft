@@ -7,4 +7,4 @@ install:
   - export GOPATH=$HOME/gopath/src/github.com/Wizmann/lab-raft
  
 script:
-  - bash $HOME/gopath/src/github.com/Wizmann/lab-raft
+  - bash $HOME/gopath/src/github.com/Wizmann/lab-raft/src/raft/test_all.sh
