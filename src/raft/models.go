@@ -97,6 +97,7 @@ type AppendEntriesArgs struct {
 
     PrevLogTerm  int
     PrevLogIndex int
+    PrevLogId string
 
     Entries []LogEntry
 

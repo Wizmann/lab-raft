@@ -12,5 +12,5 @@ set -e
 ./test.sh TestFailNoAgree2B
 ./test.sh TestConcurrentStarts2B
 ./test.sh TestRejoin2B
-#./test.sh TestBackup2B
-#./test.sh TestCount2B
+./test.sh TestBackup2B
+./test.sh TestCount2B

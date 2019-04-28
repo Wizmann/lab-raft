@@ -126,6 +126,7 @@ func (rf *Raft) updateStateTo(newState NodeState) {
             rf.NextIndex[i] = rf.GetLastLogIndex() + 1;
             rf.MatchIndex[i] = rf.GetLastLogIndex();
         }
+        rf.lastApplied = rf.commitIndex
         rf.sendHeartbeat()
         rf.renewTimer(rf.heartbeat_timeout)
     case CANDIDATE:
@@ -162,7 +163,7 @@ func (rf *Raft) sendAppendEntriesToNode(nodeId int, logIndex int) {
 
         args := AppendEntriesArgs {
             LeaderId: rf.me,
-            LeaderCommit: rf.lastApplied,
+            LeaderCommit: rf.commitIndex,
         }
 
         // heartbeat
@@ -192,15 +193,20 @@ func (rf *Raft) sendAppendEntriesToNode(nodeId int, logIndex int) {
     // the next round of leader heartbeat will detect the missing log and try to resend it again
     rf.mu.Lock();
     defer rf.mu.Unlock()
+    maxLogEntiresOnFailure := 1
     for ok {
         if (rf.state != LEADER) {
-            break;
+            return
         }
 
         if (reply.Term > rf.currentTerm) {
             DPrintf("Node[%d] reply.Term=%d, rf.currentTerm=%d", rf.me, reply.Term, rf.currentTerm);
             rf.updateStateTo(FOLLOWER)
-            break;
+            return;
+        }
+
+        if (reply.PrevLogIndex > rf.GetLastLogIndex()) {
+            return;
         }
 
         rollback := false
@@ -216,20 +222,24 @@ func (rf *Raft) sendAppendEntriesToNode(nodeId int, logIndex int) {
                         rf.me, nodeId, logIndex, rf.Entries[logIndex].LogId, logEntry.LogId);
 
                 if (logIndex == rf.NextIndex[nodeId]) {
-                    rf.NextIndex[nodeId] += 1;
+                    rf.NextIndex[nodeId] = Max(rf.NextIndex[nodeId], logIndex + 1);
                 }
 
-                rf.leaderTryApplyLog(nodeId, logIndex);
+                rf.leaderTryCommitLog(nodeId, logIndex);
             }
         } else if (!reply.Success) {
             DPrintf("Node[%d] AppendEntries to node %d failed. reply prevLog [%d,%d]", 
                     rf.me, nodeId, reply.PrevLogTerm, reply.PrevLogIndex);
-            rf.NextIndex[nodeId] = Min(rf.NextIndex[nodeId], reply.PrevLogIndex + 1);
-            rollback = true;
+            if (reply.PrevLogIndex + 1 != rf.NextIndex[nodeId]) {
+                rf.NextIndex[nodeId] = Min(rf.GetLastLogIndex() + 1, reply.PrevLogIndex + 1);
+                DPrintf("Node[%d] AppendEntries to node %d, nextIndex moves to %d",
+                        rf.me, nodeId, rf.NextIndex[nodeId]);
+                rollback = true;
+            }
         }
 
-        if (rf.NextIndex[nodeId] == rf.commitIndex + 1) {
-            break;
+        if (rf.NextIndex[nodeId] == rf.GetLastLogIndex() + 1) {
+            return;
         }
 
         Assert(rf.NextIndex[nodeId] > 0,
@@ -241,16 +251,19 @@ func (rf *Raft) sendAppendEntriesToNode(nodeId int, logIndex int) {
             LeaderId: rf.me,
             PrevLogTerm:  rf.Entries[rf.NextIndex[nodeId] - 1].Term,
             PrevLogIndex: rf.Entries[rf.NextIndex[nodeId] - 1].Index,
-            LeaderCommit: rf.lastApplied,
+            LeaderCommit: rf.commitIndex,
         }
 
         cnt := 1
         if (rollback == false) {
-            cnt = rf.NextIndex[nodeId] - reply.PrevLogIndex;
+            cnt = rf.GetLastLogIndex() - reply.PrevLogIndex;
+        } else {
+            cnt = Min(cnt, maxLogEntiresOnFailure);
+            maxLogEntiresOnFailure *= 2
         }
 
         for i := 0; i < cnt; i++ {
-            if (rf.NextIndex[nodeId] + i > rf.commitIndex) {
+            if (rf.NextIndex[nodeId] + i > rf.GetLastLogIndex()) {
                 break;
             }
             args.Entries = append(args.Entries, rf.Entries[rf.NextIndex[nodeId] + i]);
@@ -261,7 +274,7 @@ func (rf *Raft) sendAppendEntriesToNode(nodeId int, logIndex int) {
     }
 }
 
-func (rf *Raft) leaderTryApplyLog(nodeId int, logIndex int) {
+func (rf *Raft) leaderTryCommitLog(nodeId int, logIndex int) {
     Assert(rf.state == LEADER, "Node[%d] is not leader", rf.me);
     if (rf.MatchIndex[nodeId] < logIndex) {
         rf.MatchIndex[nodeId] = logIndex;
@@ -285,25 +298,16 @@ func (rf *Raft) leaderTryApplyLog(nodeId int, logIndex int) {
         }
     }
 
-    if ((minIndexCount + 1) * 2 > len(rf.peers)) {
-        for rf.lastApplied + 1 <= minIndex {
-            rf.applyMessage(rf.Entries[rf.lastApplied + 1]);
-            rf.lastApplied++;
-        }
-        rf.lastApplied = minIndex;
-    }
-}
+    cnt := 0
 
-func (rf *Raft) followerTryApplyLog(leaderCommit int) {
-    Assert(rf.state == FOLLOWER, "Node[%d] is not follower", rf.me);
-    applyTo := leaderCommit
-    if (rf.commitIndex <= applyTo) {
-        applyTo = rf.commitIndex;
+    if ((minIndexCount + 1) * 2 > len(rf.peers)) {
+        for rf.commitIndex + 1 <= minIndex {
+            rf.applyMessage(rf.Entries[rf.commitIndex + 1]);
+            rf.commitIndex++;
+            cnt += 1;
+        }
     }
-    for i := rf.lastApplied + 1; i <= applyTo; i++ {
-        rf.applyMessage(rf.Entries[i]);
-    }
-    rf.lastApplied = applyTo;
+    DPrintf("Node[%d] committed %d log entries", rf.me, cnt);
 }
 
 func (rf *Raft) applyMessage(entry LogEntry) {
@@ -346,6 +350,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
             rf.updateStateTo(FOLLOWER)
         }
 
+        if (args.LeaderCommit < rf.GetLastLogIndex()) {
+            DPrintf("Node[%d] rollback commitIndex from %d to %d", rf.me, rf.GetLastLogIndex(), args.LeaderCommit);
+            Assert(rf.commitIndex <= args.LeaderCommit, "Node[%d] has more committed log entries than leader", rf.me);
+            rf.Entries = rf.Entries[:rf.commitIndex + 1]
+            Assert(rf.GetLastLogIndex() >= 0, "Node[%d] log index should at least equal to 0", rf.me);
+        }
+
         reply.Success = true;
         reply.PrevLogTerm = rf.GetLastLogTerm();
         reply.PrevLogIndex = rf.GetLastLogIndex();
@@ -354,49 +365,38 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
             rf.updateStateTo(FOLLOWER);
         }
 
-        DPrintf("Node[%d] get AppendEntries RPC from Node[%d], LeaderCommit:%d, LastApplied:%d",
-            rf.me, args.LeaderId, args.LeaderCommit, rf.lastApplied);
+        DPrintf("Node[%d] get AppendEntries RPC from Node[%d], LeaderCommit:%d, CurrCommit:%d, CurrLogCnt: %d, PrevLog:(%d,%d)",
+            rf.me, args.LeaderId, args.LeaderCommit, rf.commitIndex, rf.GetLastLogIndex(), args.PrevLogTerm, args.PrevLogIndex);
 
-        if (args.PrevLogTerm != rf.GetLastLogTerm() || args.PrevLogIndex != rf.GetLastLogIndex()) {
-            DPrintf("Node[%d] get wrong message from node %d, args log status [%d,%d], rf log status[%d,%d]", 
-                    rf.me, args.LeaderId, args.PrevLogTerm, args.PrevLogIndex,
-                    rf.GetLastLogTerm(), rf.GetLastLogIndex());
+        if (args.PrevLogIndex <= rf.GetLastLogIndex() &&
+                rf.Entries[args.PrevLogIndex].Term != args.PrevLogTerm) {
+            DPrintf("Node[%d] rollback logs from %d to %d", rf.me, len(rf.Entries) - 1, args.PrevLogIndex - 1);
+            rf.Entries = rf.Entries[:args.PrevLogIndex]
+            Assert(rf.GetLastLogIndex() >= rf.commitIndex,
+                    "Node[%d] has more commited data(%d) than log entries(%d)",
+                    rf.me, rf.commitIndex, rf.GetLastLogIndex());
 
-            Assert(rf.commitIndex == len(rf.Entries) - 1,
-                    "Node[%d] get log entries index is not match, commitIndex: %d, entries num: %d (without dummy)",
-                    rf.me, rf.commitIndex, len(rf.Entries) - 1)
-
-            if (rf.GetLastLogIndex() > args.PrevLogIndex) {
-                DPrintf("Node[%d] rollback commitIndex from %d to %d", rf.me, rf.commitIndex, args.PrevLogIndex);
-                rf.commitIndex = args.PrevLogIndex
-                rf.Entries = rf.Entries[:rf.commitIndex + 1]
-            } else if (rf.GetLastLogIndex() == args.PrevLogIndex) {
-                DPrintf("Node[%d] rollback commitIndex from %d to %d", rf.me, rf.commitIndex, rf.commitIndex - 1);
-                rf.commitIndex -= 1
-                rf.Entries = rf.Entries[:len(rf.Entries) - 1]
-            }
-
-            Assert(rf.commitIndex == len(rf.Entries) - 1,
-                    "Node[%d] has mismatched log index, commitIndex: %d, number of entries: %d(without dummy)",
-                    rf.me, rf.commitIndex, len(rf.Entries) - 1);
             Assert(rf.GetLastLogIndex() >= 0, "Node[%d] log index should at least equal to 0", rf.me);
-
-            reply.Success = false;
+        } else if (args.PrevLogIndex == rf.GetLastLogIndex()) {
+            Assert(args.PrevLogTerm == rf.GetLastLogTerm(), "Node[%d] get mismatched log");
+            for _, entry := range args.Entries {
+                rf.Entries = append(rf.Entries, entry)
+                DPrintf("Node[%d] append log entry [%d,%d,%s]",
+                        rf.me, entry.Term, entry.Index, entry.LogId);
+                reply.Entries = append(reply.Entries, entry)
+            }
+            DPrintf("Node[%d] get %d entries, try committed log entrys from %d to %d",
+                    rf.me, len(args.Entries), rf.commitIndex, Min(rf.commitIndex, args.LeaderCommit));
+            rf.followerTryApplyLog(Min(rf.GetLastLogIndex(), args.LeaderCommit));
+            reply.Success = true
             reply.PrevLogTerm = rf.GetLastLogTerm();
             reply.PrevLogIndex = rf.GetLastLogIndex();
         } else {
-            for _, entry := range args.Entries {
-                rf.Entries = append(rf.Entries, entry)
-                rf.commitIndex += 1;
-                Assert(rf.commitIndex == entry.Index,
-                        "Node[%d] log index should be continuous. rf.commitIndex[%d] != entry.Index[%d]",
-                        rf.me, rf.commitIndex, entry.Index);
-                DPrintf("Node[%d] append log entry [%d,%d,%x,%s]",
-                        rf.me, entry.Term, entry.Index, entry.Command.(int), entry.LogId);
-                reply.Entries = append(reply.Entries, entry)
-            }
-            rf.followerTryApplyLog(args.LeaderCommit);
-            reply.Success = true
+            DPrintf("Node[%d] get out of log message from node %d, args log status [%d,%d], rf log status[%d,%d]", 
+                    rf.me, args.LeaderId, args.PrevLogTerm, args.PrevLogIndex,
+                    rf.GetLastLogTerm(), rf.GetLastLogIndex());
+
+            reply.Success = false;
             reply.PrevLogTerm = rf.GetLastLogTerm();
             reply.PrevLogIndex = rf.GetLastLogIndex();
         }
@@ -405,6 +405,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
     }
 }
 
+func (rf *Raft) followerTryApplyLog(applyTo int) {
+    if (rf.state != FOLLOWER) {
+        DPrintf("Node[%d] is not follower", rf.me);
+        return;
+    }
+    for i := rf.commitIndex + 1; i <= applyTo; i++ {
+        rf.applyMessage(rf.Entries[i]);
+    }
+    rf.commitIndex = applyTo;
+}
 
 //
 // example code to send a RequestVote RPC to a server.
@@ -467,8 +477,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
     defer rf.mu.Unlock()
 
     term = rf.currentTerm
-    index = rf.commitIndex + 1
-    rf.commitIndex += 1
+    index = len(rf.Entries)
 
     entry := LogEntry {
         Term: term,
@@ -481,8 +490,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
     rf.NextIndex[rf.me] += 1
 
-    DPrintf("Node[%d] Start sending commands (%d,%d,%x,%s)",
-            rf.me, entry.Term, entry.Index, entry.Command.(int), entry.LogId);
+    DPrintf("Node[%d] Start sending commands (%d,%d,%s)",
+            rf.me, entry.Term, entry.Index, entry.LogId);
 
     rf.sendAppendEntries(entry.Index);
 
@@ -500,15 +509,16 @@ func (rf *Raft) Kill() {
 }
 
 func (rf *Raft) GetLastLogTerm() int {
-    return rf.Entries[rf.commitIndex].Term;
+    return rf.GetLastLogEntry().Term;
 }
 
 func (rf *Raft) GetLastLogIndex() int {
-    return rf.Entries[rf.commitIndex].Index;
+    return rf.GetLastLogEntry().Index;
 }
 
 func (rf *Raft) GetLastLogEntry() LogEntry {
-    return rf.Entries[rf.commitIndex];
+    l := len(rf.Entries)
+    return rf.Entries[l - 1];
 }
 
 func (rf *Raft) startElection() {
@@ -594,8 +604,8 @@ func (rf *Raft) renewTimer(timeout time.Duration) {
 
 
 func (rf *Raft) process() {
-    DPrintf("Node[%d] is processing, state: [%s], term %d, commitIndex: %d, lastApplied: %d, leader %d", 
-            rf.me, rf.state.ToString(), rf.currentTerm, rf.commitIndex, rf.lastApplied, rf.LeaderId);
+    DPrintf("Node[%d] is processing, state: [%s], term %d, commitIndex: %d, logCount: %d, leader %d", 
+            rf.me, rf.state.ToString(), rf.currentTerm, rf.commitIndex, len(rf.Entries) - 1, rf.LeaderId);
     switch rf.state {
     case LEADER:
         rf.sendHeartbeat()
