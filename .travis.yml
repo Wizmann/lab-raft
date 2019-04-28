@@ -2,6 +2,9 @@ language: go
  
 go:
   - 1.6
+  
+install:
+  - export GOPATH=$HOME/gopath/src/github.com/Wizmann/lab-raft
  
 script:
   - bash src/raft/test_all.sh
