@@ -4,4 +4,4 @@ go:
   - 1.6
  
 script:
-  - bash src/raft/test_all.sh
+  - bash src/raft/test_all.sh > /dev/null
