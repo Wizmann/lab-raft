@@ -516,7 +516,7 @@ func TestPersist12C(t *testing.T) {
 
     cfg.one(11, servers, true)
 
-    // crash and re-start all
+    DPrintf("crash and re-start all");
     for i := 0; i < servers; i++ {
         cfg.start1(i)
     }
@@ -540,7 +540,8 @@ func TestPersist12C(t *testing.T) {
     cfg.start1(leader2)
     cfg.connect(leader2)
 
-    cfg.wait(4, servers, -1) // wait for leader2 to join before killing i3
+    DPrintf("wait for leader2 to join before killing i3")
+    cfg.wait(4, servers, -1) 
 
     i3 := (cfg.checkOneLeader() + 1) % servers
     cfg.disconnect(i3)

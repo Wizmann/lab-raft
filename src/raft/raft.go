@@ -26,9 +26,8 @@ import (
 //
 
 import "labrpc"
-
-// import "bytes"
-// import "labgob"
+import "bytes"
+import "labgob"
 
 func (rf *Raft) GetState() (int, bool) {
     term := rf.currentTerm
@@ -44,14 +43,15 @@ func (rf *Raft) GetState() (int, bool) {
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persist() {
-    // Your code here (2C).
-    // Example:
-    // w := new(bytes.Buffer)
-    // e := labgob.NewEncoder(w)
-    // e.Encode(rf.xxx)
-    // e.Encode(rf.yyy)
-    // data := w.Bytes()
-    // rf.persister.SaveRaftState(data)
+    w := new(bytes.Buffer)
+    encoder := labgob.NewEncoder(w)
+    encoder.Encode(rf.currentTerm)
+    encoder.Encode(rf.commitIndex)
+    encoder.Encode(rf.Entries)
+    encoder.Encode(rf.NextIndex)
+    encoder.Encode(rf.MatchIndex)
+    data := w.Bytes()
+    rf.persister.SaveRaftState(data)
 }
 
 
@@ -59,22 +59,30 @@ func (rf *Raft) persist() {
 // restore previously persisted state.
 //
 func (rf *Raft) readPersist(data []byte) {
-    if data == nil || len(data) < 1 { // bootstrap without any state?
+    // bootstrap without any state
+    if data == nil || len(data) < 1 {
         return
     }
-    // Your code here (2C).
-    // Example:
-    // r := bytes.NewBuffer(data)
-    // d := labgob.NewDecoder(r)
-    // var xxx
-    // var yyy
-    // if d.Decode(&xxx) != nil ||
-    //    d.Decode(&yyy) != nil {
-    //   error...
-    // } else {
-    //   rf.xxx = xxx
-    //   rf.yyy = yyy
-    // }
+
+    r := bytes.NewBuffer(data)
+    d := labgob.NewDecoder(r)
+
+    ok := d.Decode(&rf.currentTerm) == nil &&
+          d.Decode(&rf.commitIndex) == nil &&
+          d.Decode(&rf.Entries) == nil     &&
+          d.Decode(&rf.NextIndex) == nil   &&
+          d.Decode(&rf.MatchIndex) == nil;
+
+    // rollback
+    if (!ok) {
+        DPrintf("Node[%d] read persist error");
+
+        rf.currentTerm = 0
+        rf.commitIndex = 0
+        rf.Entries = make([]LogEntry, 0)
+        rf.NextIndex = make([]int, len(rf.peers));
+        rf.MatchIndex = make([]int, len(rf.peers));
+    }
 }
 
 //
@@ -317,7 +325,8 @@ func (rf *Raft) applyMessage(entry LogEntry) {
         Command: entry.Command,
     };
 
-     rf.applyCh <- msg;
+    rf.persist()
+    rf.applyCh <- msg;
 }
 
 func (rf *Raft) sendHeartbeat() {
@@ -657,7 +666,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
     rf.MatchIndex = make([]int, len(rf.peers));
 
     rf.updateStateTo(FOLLOWER);
-
 
     // initialize from state persisted before a crash
     rf.readPersist(persister.ReadRaftState())
