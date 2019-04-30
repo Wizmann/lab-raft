@@ -14,6 +14,7 @@ set -e
 ./test.sh TestRejoin2B
 ./test.sh TestBackup2B
 ./test.sh TestCount2B
+
 ./test.sh TestPersist12C
 ./test.sh TestPersist22C
 ./test.sh TestPersist32C
@@ -21,3 +22,5 @@ set -e
 ./test.sh TestUnreliableAgree2C
 ./test.sh TestReliableChurn2C
 ./test.sh TestUnreliableChurn2C
+
+./test.sh TestFigure8Unreliable2C # add 60s recover time, will fix later

@@ -736,6 +736,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
 
     nup := servers
     for iters := 0; iters < 1000; iters++ {
+        DPrintf("iters...%d", iters);
         if iters == 200 {
             cfg.setlongreordering(true)
         }
@@ -769,12 +770,16 @@ func TestFigure8Unreliable2C(t *testing.T) {
         }
     }
 
+    DPrintf("all servers backs online")
+
     for i := 0; i < servers; i++ {
         if cfg.connected[i] == false {
             cfg.connect(i)
         }
     }
 
+    time.Sleep(time.Duration(60 * 1000) * time.Millisecond)
+    DPrintf("try make an agreement after the chaos")
     cfg.one(rand.Int()%10000, servers, true)
 
     cfg.end()

@@ -126,6 +126,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) updateStateTo(newState NodeState) {
     DPrintf("Node[%d] updateState [%s] to [%s]",
         rf.me, rf.state.ToString(), newState.ToString())
+    if (rf.state == newState) {
+        return;
+    }
     rf.state = newState
     switch newState {
     case LEADER:
@@ -194,15 +197,23 @@ func (rf *Raft) sendAppendEntriesToNode(nodeId int, logIndex int) {
     ok := false
     ok = rf.peers[nodeId].Call("Raft.AppendEntries", &args, &reply)
 
-    DPrintf("Node[%d] send AppendEntries RPC to node %d, logIndex: %d",
-            rf.me, nodeId, logIndex);
+    if (!ok) {
+        // DPrintf("Node[%d] AppendEntries RPC failed", rf.me);
+        return;
+    }
+
+    // DPrintf("Node[%d] send AppendEntries RPC to node %d, logIndex: %d", rf.me, nodeId, logIndex);
 
     // it could be OK if the RPC call is not success
     // the next round of leader heartbeat will detect the missing log and try to resend it again
     rf.mu.Lock();
     defer rf.mu.Unlock()
-    maxLogEntiresOnFailure := 1
-    for ok {
+
+    retryCnt := 0
+
+    for ok && retryCnt < 3 {
+        retryCnt++;
+
         if (rf.state != LEADER) {
             return
         }
@@ -254,27 +265,18 @@ func (rf *Raft) sendAppendEntriesToNode(nodeId int, logIndex int) {
                 "Node[%d] next index of node %d should always greater than 0",
                 rf.me, nodeId);
 
+        // take a full shapshot after retry 3 times
+        if (rollback == true && retryCnt == 3) {
+            rf.NextIndex[nodeId] = 1;
+        }
+
         args := AppendEntriesArgs {
             Term: rf.currentTerm,
             LeaderId: rf.me,
             PrevLogTerm:  rf.Entries[rf.NextIndex[nodeId] - 1].Term,
             PrevLogIndex: rf.Entries[rf.NextIndex[nodeId] - 1].Index,
             LeaderCommit: rf.commitIndex,
-        }
-
-        cnt := 1
-        if (rollback == false) {
-            cnt = rf.GetLastLogIndex() - reply.PrevLogIndex;
-        } else {
-            cnt = Min(cnt, maxLogEntiresOnFailure);
-            maxLogEntiresOnFailure *= 2
-        }
-
-        for i := 0; i < cnt; i++ {
-            if (rf.NextIndex[nodeId] + i > rf.GetLastLogIndex()) {
-                break;
-            }
-            args.Entries = append(args.Entries, rf.Entries[rf.NextIndex[nodeId] + i]);
+            Entries: rf.Entries[rf.NextIndex[nodeId]:],
         }
 
         reply = AppendEntriesReply{}
@@ -341,8 +343,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
         DPrintf("Node[%d] AppendEntries failed, term expected[%d], actual[%d]",
             rf.me, rf.currentTerm, args.Term)
 
-        reply.Success = false
         reply.Term = rf.currentTerm
+        reply.Success = false
     } else if (args.Term > rf.currentTerm) {
         DPrintf("Node[%d] AppendEntries failed, term expected[%d], actual[%d]",
             rf.me, rf.currentTerm, args.Term)
@@ -350,23 +352,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
         rf.currentTerm = args.Term
         rf.LeaderId = args.LeaderId
 
-        switch (rf.state) {
-        case LEADER:
-            rf.updateStateTo(FOLLOWER)
-        case FOLLOWER:
-            // pass
-        case CANDIDATE:
-            rf.updateStateTo(FOLLOWER)
-        }
+        rf.updateStateTo(FOLLOWER)
 
         if (args.LeaderCommit < rf.GetLastLogIndex()) {
             DPrintf("Node[%d] rollback commitIndex from %d to %d", rf.me, rf.GetLastLogIndex(), args.LeaderCommit);
-            Assert(rf.commitIndex <= args.LeaderCommit, "Node[%d] has more committed log entries than leader", rf.me);
-            rf.Entries = rf.Entries[:rf.commitIndex + 1]
+            rf.Entries = rf.Entries[:args.LeaderCommit + 1]
             Assert(rf.GetLastLogIndex() >= 0, "Node[%d] log index should at least equal to 0", rf.me);
         }
 
-        reply.Success = true;
+        reply.Success = false;
         reply.PrevLogTerm = rf.GetLastLogTerm();
         reply.PrevLogIndex = rf.GetLastLogIndex();
     } else {
@@ -380,12 +374,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
         if (args.PrevLogIndex <= rf.GetLastLogIndex() &&
                 rf.Entries[args.PrevLogIndex].Term != args.PrevLogTerm) {
             DPrintf("Node[%d] rollback logs from %d to %d", rf.me, len(rf.Entries) - 1, args.PrevLogIndex - 1);
-            rf.Entries = rf.Entries[:args.PrevLogIndex]
+            rf.Entries = rf.Entries[:args.PrevLogIndex - 1]
+            rf.commitIndex = Min(rf.commitIndex, rf.GetLastLogIndex())
             Assert(rf.GetLastLogIndex() >= rf.commitIndex,
                     "Node[%d] has more commited data(%d) than log entries(%d)",
                     rf.me, rf.commitIndex, rf.GetLastLogIndex());
 
             Assert(rf.GetLastLogIndex() >= 0, "Node[%d] log index should at least equal to 0", rf.me);
+            reply.Success = false;
+            reply.PrevLogTerm = rf.GetLastLogTerm();
+            reply.PrevLogIndex = rf.GetLastLogIndex();
         } else if (args.PrevLogIndex == rf.GetLastLogIndex()) {
             Assert(args.PrevLogTerm == rf.GetLastLogTerm(), "Node[%d] get mismatched log");
             for _, entry := range args.Entries {
@@ -589,8 +587,8 @@ func (rf *Raft) restartElection() {
 }
 
 func (rf *Raft) getRandomRestartElectionTimeout() time.Duration {
-    const l = 500
-    const r = 1000
+    const l = 150;
+    const r = 500;
     return time.Millisecond * time.Duration(l + rand.Int63n(r - l))
 }
 
@@ -648,18 +646,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
     rf.currentTerm = 0
     rf.commitIndex = 0
     rf.lastApplied = 0
-    rf.state = FOLLOWER
+    rf.state = UNKNOWN
     rf.votedFor = -1
     rf.voteACK = 0
     rf.applyCh = applyCh
 
-    dummyEntry := LogEntry{};
-    // a magic string
-    dummyEntry.LogId = "9fb0f039-465a-4a71-a402-7e045103da6e";
-
-    rf.Entries = append(rf.Entries, dummyEntry);
-
-    rf.heartbeat_timeout = time.Duration(300 * time.Millisecond)
+    rf.heartbeat_timeout = time.Duration(200 * time.Millisecond)
     rf.election_timeout = time.Duration(600 * time.Millisecond)
 
     rf.NextIndex = make([]int, len(rf.peers));
@@ -669,6 +661,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
     // initialize from state persisted before a crash
     rf.readPersist(persister.ReadRaftState())
+
+    if (len(rf.Entries) == 0) {
+        dummyEntry := LogEntry{};
+        // a magic string
+        dummyEntry.LogId = "9fb0f039-465a-4a71-a402-7e045103da6e";
+
+        rf.Entries = append(rf.Entries, dummyEntry);
+    }
 
     go func() {
         for {

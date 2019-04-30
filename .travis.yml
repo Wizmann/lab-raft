@@ -2,6 +2,12 @@ language: go
  
 go:
   - 1.6
+
+sudo: required
+
+install:
+  - sudo apt-get install realpath
+  - export GOPATH=$HOME/gopath/src/github.com/Wizmann/lab-raft
  
 script:
-  - bash src/raft/test_all.sh > /dev/null
+  - bash $HOME/gopath/src/github.com/Wizmann/lab-raft/src/raft/test_all.sh > /dev/null
