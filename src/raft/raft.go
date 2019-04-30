@@ -607,8 +607,8 @@ func (rf *Raft) restartElection() {
 }
 
 func (rf *Raft) getRandomRestartElectionTimeout() time.Duration {
-    const l = 150;
-    const r = 500;
+    const l = 500;
+    const r = 1500;
     return time.Millisecond * time.Duration(l + rand.Int63n(r - l))
 }
 
@@ -668,8 +668,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
     rf.voteACK = 0
     rf.applyCh = applyCh
 
-    rf.heartbeat_timeout = time.Duration(200 * time.Millisecond)
-    rf.election_timeout = time.Duration(666 * time.Millisecond)
+    rf.heartbeat_timeout = time.Duration(300 * time.Millisecond)
+    rf.election_timeout = time.Duration(1000 * time.Millisecond)
 
     rf.NextIndex = make([]int, len(rf.peers));
     rf.MatchIndex = make([]int, len(rf.peers));

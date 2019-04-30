@@ -764,7 +764,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
         if nup < 3 {
             s := rand.Int() % servers
             if cfg.connected[s] == false {
-                cfg.connect(s)
+        D       cfg.connect(s)
                 nup += 1
             }
         }
@@ -778,7 +778,6 @@ func TestFigure8Unreliable2C(t *testing.T) {
         }
     }
 
-    // time.Sleep(time.Duration(3 * 1000) * time.Millisecond)
     DPrintf("try make an agreement after the chaos")
     cfg.one(rand.Int()%10000, servers, true)
 
