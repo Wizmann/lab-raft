@@ -668,8 +668,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
     rf.voteACK = 0
     rf.applyCh = applyCh
 
-    rf.heartbeat_timeout = time.Duration(500 * time.Millisecond)
-    rf.election_timeout = time.Duration(1200 * time.Millisecond)
+    rf.heartbeat_timeout = time.Duration(200 * time.Millisecond)
+    rf.election_timeout = time.Duration(666 * time.Millisecond)
 
     rf.NextIndex = make([]int, len(rf.peers));
     rf.MatchIndex = make([]int, len(rf.peers));
