@@ -28,8 +28,7 @@ type Raft struct {
 
     Entries []LogEntry
 
-    commitIndex int // log to be committed
-    lastApplied int // acked log have been committed to the state machine
+    commitIndex int // committed log
 
     NextIndex []int
     MatchIndex []int

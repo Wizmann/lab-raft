@@ -20,7 +20,7 @@ set -e
 ./test.sh TestPersist32C
 ./test.sh TestFigure82C
 ./test.sh TestUnreliableAgree2C
+./test.sh TestFigure8Unreliable2C
 ./test.sh TestReliableChurn2C
 ./test.sh TestUnreliableChurn2C
 
-./test.sh TestFigure8Unreliable2C # add 60s recover time, will fix later
