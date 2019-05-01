@@ -8,7 +8,7 @@ import "path/filepath"
 import "crypto/rand"
 
 // Debugging
-const Debug = 0
+const Debug = 1
 
 var logMu sync.Mutex;
 

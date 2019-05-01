@@ -404,17 +404,29 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
             reply.Success = false;
             reply.PrevLogTerm = rf.GetLastLogTerm();
             reply.PrevLogIndex = rf.GetLastLogIndex();
-        } else if (args.PrevLogIndex == rf.GetLastLogIndex()) {
-            Assert(args.PrevLogTerm == rf.GetLastLogTerm(), "Node[%d] get mismatched log");
+        } else if (args.PrevLogIndex <= rf.GetLastLogIndex() && rf.Entries[args.PrevLogIndex].Term == args.PrevLogTerm) {
+            appendCnt := 0
             for _, entry := range args.Entries {
-                rf.Entries = append(rf.Entries, entry)
+                if (entry.Index <= rf.GetLastLogIndex()) {
+                    Assert(entry.Term == rf.Entries[entry.Index].Term,
+                            "Node[%d] get mistached term on entry[%d]",
+                            rf.me, entry.Index);
+
+                    Assert(entry.LogId == rf.Entries[entry.Index].LogId,
+                            "Node[%d] get mistached log id on entry[%d]",
+                            rf.me, entry.Index);
+                } else {
+                    rf.Entries = append(rf.Entries, entry)
+                    appendCnt++;
+                }
             }
 
             reply.Entries = append(reply.Entries, rf.GetLastLogEntry())
 
-            DPrintf("Node[%d] get %d entries, try commit log entrys from %d to %d",
-                    rf.me, len(args.Entries), rf.commitIndex, Min(args.LeaderCommit, rf.GetLastLogIndex()));
+            DPrintf("Node[%d] get %d entries, append %d entries, try commit log entrys from %d to %d",
+                    rf.me, len(args.Entries), appendCnt, rf.commitIndex, Min(args.LeaderCommit, rf.GetLastLogIndex()));
             rf.followerTryApplyLog(Min(args.LeaderCommit, rf.GetLastLogIndex()));
+
             reply.Success = true
             reply.PrevLogTerm = rf.GetLastLogTerm();
             reply.PrevLogIndex = rf.GetLastLogIndex();
@@ -689,8 +701,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
     go func() {
         for {
-            DPrintf("Node[%d] is %s processing, term %d, leader %d",
-                rf.me, rf.state.ToString(), rf.currentTerm, rf.LeaderId)
             select {
             case <- rf.timer.C:
                 rf.process()
