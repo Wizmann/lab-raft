@@ -1,16 +1,21 @@
 package raft
 
+import "os"
 import "fmt"
 import "runtime"
-import "sync"
 import "time"
 import "path/filepath"
 import "math/rand"
 
 // Debugging
-const Debug = 1
+var Debug = GetDebug();
 
-var logMu sync.Mutex;
+func GetDebug() int {
+    if (os.Getenv("TRAVIS_CI") == "") {
+        return 1;
+    }
+    return 0;
+}
 
 func DPrintf(format string, a ...interface{}) {
     if Debug > 0 {
