@@ -8,6 +8,7 @@ package raft
 // test with the original before submitting.
 //
 
+import _ "os"
 import "testing"
 import "fmt"
 import "time"
@@ -736,7 +737,11 @@ func TestFigure8Unreliable2C(t *testing.T) {
 
     nup := servers
     for iters := 0; iters < 1000; iters++ {
-        DPrintf("iters...%d", iters);
+        /*
+        if (iters % 100 == 0) {
+            fmt.Fprintf(os.Stderr, "iters...%d\n", iters);
+        }
+        */
         if iters == 200 {
             cfg.setlongreordering(true)
         }
