@@ -14,3 +14,13 @@ set -e
 ./test.sh TestRejoin2B
 ./test.sh TestBackup2B
 ./test.sh TestCount2B
+
+./test.sh TestPersist12C
+./test.sh TestPersist22C
+./test.sh TestPersist32C
+./test.sh TestFigure82C
+./test.sh TestUnreliableAgree2C
+./test.sh TestFigure8Unreliable2C
+./test.sh TestReliableChurn2C
+./test.sh TestUnreliableChurn2C
+

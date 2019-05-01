@@ -8,6 +8,7 @@ package raft
 // test with the original before submitting.
 //
 
+import "os"
 import "labrpc"
 import "log"
 import "sync"
@@ -216,7 +217,7 @@ func (cfg *config) start1(i int) {
 
 func (cfg *config) checkTimeout() {
     // enforce a two minute real-time limit on each test
-    if !cfg.t.Failed() && time.Since(cfg.start) > 120*time.Second {
+    if !cfg.t.Failed() && time.Since(cfg.start) > 1200*time.Second {
         cfg.t.Fatal("test took longer than 120 seconds")
     }
 }
@@ -476,7 +477,7 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 // print the Test message.
 // e.g. cfg.begin("Test (2B): RPC counts aren't too high")
 func (cfg *config) begin(description string) {
-    fmt.Printf("%s ...\n", description)
+    fmt.Fprintf(os.Stderr, "%s ...\n", description)
     cfg.t0 = time.Now()
     cfg.rpcs0 = cfg.rpcTotal()
     cfg.cmds0 = 0
@@ -497,7 +498,9 @@ func (cfg *config) end() {
         ncmds := cfg.maxIndex - cfg.maxIndex0 // number of Raft agreements reported
         cfg.mu.Unlock()
 
-        fmt.Printf("  ... Passed --")
-        fmt.Printf("  %4.1f  %d %4d %4d\n", t, npeers, nrpc, ncmds)
+        fmt.Fprintf(os.Stderr, "  ... Passed --")
+        fmt.Fprintf(os.Stderr, "  %4.1f  %d %4d %4d\n", t, npeers, nrpc, ncmds)
+    } else {
+        fmt.Fprintf(os.Stderr, "  ... Failed --")
     }
 }
