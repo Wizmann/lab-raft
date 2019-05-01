@@ -89,6 +89,10 @@ func (rf *Raft) readPersist(data []byte) {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+    if (rf.state == LEADER) {
+        return
+    }
+
     rf.mu.Lock()
     defer rf.mu.Unlock()
 
@@ -119,7 +123,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
     reply.Term = rf.currentTerm
     reply.VoteFrom = rf.me
-    return
 }
 
 // not thread-safe, add concurrency control when call this func
@@ -168,8 +171,6 @@ func (rf *Raft) sendAppendEntriesToNode(nodeId int, logIndex int) {
     }
 
     args := func() AppendEntriesArgs {
-        rf.mu.Lock();
-        defer rf.mu.Unlock()
         args := AppendEntriesArgs {
             LeaderId: rf.me,
             LeaderCommit: rf.commitIndex,
@@ -183,10 +184,10 @@ func (rf *Raft) sendAppendEntriesToNode(nodeId int, logIndex int) {
             args.PrevLogIndex = prevLogEntry.Index;
             Assert(len(args.Entries) == 0, "Node[%d] heartbeat should not have entries")
         } else {
-            prevLogEntry := rf.Entries[logIndex - 1];
+            prevLogEntry := rf.Entries[rf.NextIndex[nodeId] - 1]
             args.PrevLogTerm = prevLogEntry.Term;
             args.PrevLogIndex = prevLogEntry.Index;
-            args.Entries = append(args.Entries, rf.Entries[logIndex]);
+            args.Entries = rf.Entries[rf.NextIndex[nodeId]:]
         }
 
         return args
@@ -314,7 +315,7 @@ func (rf *Raft) leaderTryCommitLog(nodeId int, logIndex int) {
         }
         rf.persist()
     }
-    DPrintf("Node[%d] committed %d log entries", rf.me, cnt);
+    // DPrintf("Node[%d] committed %d log entries", rf.me, cnt);
 }
 
 func (rf *Raft) applyMessage(entry LogEntry) {
@@ -516,7 +517,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
     defer rf.mu.Unlock()
 
     term = rf.currentTerm
-    index = len(rf.Entries)
+    index = rf.GetLastLogIndex() + 1
 
     entry := LogEntry {
         Term: term,
@@ -527,12 +528,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
     rf.Entries = append(rf.Entries, entry)
 
-    rf.NextIndex[rf.me] += 1
+    rf.NextIndex[rf.me] = entry.Index + 1
 
     DPrintf("Node[%d] Start sending commands (%d,%d,%s)",
             rf.me, entry.Term, entry.Index, entry.LogId);
 
-    rf.sendAppendEntries(entry.Index);
+    // rf.sendAppendEntries(entry.Index);
 
     return index, term, isLeader
 }
@@ -596,7 +597,13 @@ func (rf *Raft) restartElection() {
             }
 
             var reply RequestVoteReply
-            rf.sendRequestVote(server, &args, &reply)
+            if (!rf.sendRequestVote(server, &args, &reply)) {
+                return;
+            }
+
+            if (reply.Term < rf.currentTerm) {
+                return;
+            }
 
             rf.mu.Lock()
             defer rf.mu.Unlock()
@@ -680,8 +687,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
     rf.voteACK = 0
     rf.applyCh = applyCh
 
-    rf.heartbeat_timeout = time.Duration(300 * time.Millisecond)
-    rf.election_timeout = time.Duration(1000 * time.Millisecond)
+    rf.heartbeat_timeout = time.Duration(500 * time.Millisecond)
+    rf.election_timeout = time.Duration(1200 * time.Millisecond)
 
     rf.NextIndex = make([]int, len(rf.peers));
     rf.MatchIndex = make([]int, len(rf.peers));
