@@ -780,6 +780,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
     }
 
     DPrintf("try make an agreement after the chaos")
+    time.Sleep(time.Duration(3000) * time.Millisecond) // sleep extra 3s because travis ci machine is slow
     cfg.one(rand.Int()%10000, servers, true)
 
     cfg.end()
