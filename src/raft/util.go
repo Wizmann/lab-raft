@@ -5,7 +5,7 @@ import "runtime"
 import "sync"
 import "time"
 import "path/filepath"
-import "crypto/rand"
+import "math/rand"
 
 // Debugging
 const Debug = 0

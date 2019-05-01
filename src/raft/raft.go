@@ -619,8 +619,8 @@ func (rf *Raft) restartElection() {
 }
 
 func (rf *Raft) getRandomRestartElectionTimeout() time.Duration {
-    const l = 1000;
-    const r = 3000;
+    const l = 300;
+    const r = 800;
     return time.Millisecond * time.Duration(l + rand.Int63n(r - l))
 }
 
