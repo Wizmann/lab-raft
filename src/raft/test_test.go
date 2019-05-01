@@ -764,7 +764,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
         if nup < 3 {
             s := rand.Int() % servers
             if cfg.connected[s] == false {
-        D       cfg.connect(s)
+                cfg.connect(s)
                 nup += 1
             }
         }
