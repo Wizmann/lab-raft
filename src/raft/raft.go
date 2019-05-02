@@ -135,13 +135,14 @@ func (rf *Raft) updateStateTo(newState NodeState) {
     rf.state = newState
     switch newState {
     case LEADER:
+        rf.renewTimer(rf.heartbeat_timeout)
+
         // init leader log pointers
         for i := 0; i < len(rf.peers); i++ {
             rf.NextIndex[i] = rf.GetLastLogIndex() + 1;
             rf.MatchIndex[i] = rf.GetLastLogIndex();
         }
         rf.sendHeartbeat()
-        rf.renewTimer(rf.heartbeat_timeout)
     case CANDIDATE:
         rf.renewTimer(rf.getRandomRestartElectionTimeout())
     case FOLLOWER:
@@ -333,8 +334,8 @@ func (rf *Raft) applyMessage(entry LogEntry) {
 }
 
 func (rf *Raft) sendHeartbeat() {
-    rf.sendAppendEntries(-1)
     rf.renewTimer(rf.heartbeat_timeout)
+    rf.sendAppendEntries(-1)
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
