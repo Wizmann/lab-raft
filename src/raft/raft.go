@@ -211,8 +211,6 @@ func (rf *Raft) sendAppendEntriesToNode(nodeId int, logIndex int) {
 
     // it could be OK if the RPC call is not success
     // the next round of leader heartbeat will detect the missing log and try to resend it again
-    rf.mu.Lock();
-    defer rf.mu.Unlock()
 
     retryCnt := 0
     maxRetryCnt := 2
@@ -220,65 +218,75 @@ func (rf *Raft) sendAppendEntriesToNode(nodeId int, logIndex int) {
     for ok && retryCnt < maxRetryCnt {
         retryCnt++;
 
-        if (rf.state != LEADER) {
-            return
-        }
-
-        if (reply.Term > rf.currentTerm) {
-            DPrintf("Node[%d] reply.Term=%d, rf.currentTerm=%d", rf.me, reply.Term, rf.currentTerm);
-            rf.updateStateTo(FOLLOWER)
-            return;
-        }
-
-        rollback := false
-
-        if (reply.Success && len(reply.Entries) > 0) {
-            n := len(reply.Entries);
-
-            logEntry := reply.Entries[n - 1]
-            logIndex := logEntry.Index;
-
-            Assert(rf.Entries[logIndex].LogId == logEntry.LogId,
-                    "Node[%d] has unmatched log with node %d on index[%d], %s != %s",
-                    rf.me, nodeId, logIndex, rf.Entries[logIndex].LogId, logEntry.LogId);
-
-            rf.NextIndex[nodeId] = Max(rf.NextIndex[nodeId], logIndex + 1);
-            rf.leaderTryCommitLog(nodeId, logIndex);
-        } else if (!reply.Success) {
-            DPrintf("Node[%d] AppendEntries to node %d failed. reply prevLog [%d,%d]", 
-                    rf.me, nodeId, reply.PrevLogTerm, reply.PrevLogIndex);
-            if (reply.PrevLogIndex + 1 != rf.NextIndex[nodeId]) {
-                rf.NextIndex[nodeId] = Min(rf.GetLastLogIndex() + 1, reply.PrevLogIndex + 1);
-                DPrintf("Node[%d] AppendEntries to node %d, nextIndex moves to %d",
-                        rf.me, nodeId, rf.NextIndex[nodeId]);
-                rollback = true;
+        req := func() (*AppendEntriesArgs) {
+            rf.mu.Lock();
+            defer rf.mu.Unlock()
+            if (rf.state != LEADER) {
+                return nil;
             }
-        }
 
-        if (rf.NextIndex[nodeId] == rf.GetLastLogIndex() + 1) {
-            return;
-        }
+            if (reply.Term > rf.currentTerm) {
+                DPrintf("Node[%d] reply.Term=%d, rf.currentTerm=%d", rf.me, reply.Term, rf.currentTerm);
+                rf.updateStateTo(FOLLOWER)
+                return nil;
+            }
 
-        Assert(rf.NextIndex[nodeId] > 0,
-                "Node[%d] next index of node %d should always greater than 0",
-                rf.me, nodeId);
+            rollback := false
 
-        // take a full snapshot after multiple retry
-        if (rollback == true && retryCnt == maxRetryCnt) {
-            rf.NextIndex[nodeId] = 1;
-        }
+            if (reply.Success && len(reply.Entries) > 0) {
+                n := len(reply.Entries);
 
-        args := AppendEntriesArgs {
-            Term: rf.currentTerm,
-            LeaderId: rf.me,
-            PrevLogTerm:  rf.Entries[rf.NextIndex[nodeId] - 1].Term,
-            PrevLogIndex: rf.Entries[rf.NextIndex[nodeId] - 1].Index,
-            LeaderCommit: rf.commitIndex,
-            Entries: rf.Entries[rf.NextIndex[nodeId]:],
+                logEntry := reply.Entries[n - 1]
+                logIndex := logEntry.Index;
+
+                Assert(rf.Entries[logIndex].LogId == logEntry.LogId,
+                        "Node[%d] has unmatched log with node %d on index[%d], %s != %s",
+                        rf.me, nodeId, logIndex, rf.Entries[logIndex].LogId, logEntry.LogId);
+
+                rf.NextIndex[nodeId] = Max(rf.NextIndex[nodeId], logIndex + 1);
+                rf.leaderTryCommitLog(nodeId, logIndex);
+            } else if (!reply.Success) {
+                DPrintf("Node[%d] AppendEntries to node %d failed. reply prevLog [%d,%d]", 
+                        rf.me, nodeId, reply.PrevLogTerm, reply.PrevLogIndex);
+                if (reply.PrevLogIndex + 1 != rf.NextIndex[nodeId]) {
+                    rf.NextIndex[nodeId] = Min(rf.GetLastLogIndex() + 1, reply.PrevLogIndex + 1);
+                    DPrintf("Node[%d] AppendEntries to node %d, nextIndex moves to %d",
+                            rf.me, nodeId, rf.NextIndex[nodeId]);
+                    rollback = true;
+                }
+            }
+
+            if (rf.NextIndex[nodeId] == rf.GetLastLogIndex() + 1) {
+                return nil;
+            }
+
+            Assert(rf.NextIndex[nodeId] > 0,
+                    "Node[%d] next index of node %d should always greater than 0",
+                    rf.me, nodeId);
+
+            // take a full snapshot after multiple retry
+            if (rollback == true && retryCnt == maxRetryCnt) {
+                rf.NextIndex[nodeId] = 1;
+            }
+
+            args := AppendEntriesArgs {
+                Term: rf.currentTerm,
+                LeaderId: rf.me,
+                PrevLogTerm:  rf.Entries[rf.NextIndex[nodeId] - 1].Term,
+                PrevLogIndex: rf.Entries[rf.NextIndex[nodeId] - 1].Index,
+                LeaderCommit: rf.commitIndex,
+                Entries: rf.Entries[rf.NextIndex[nodeId]:],
+            }
+
+            return &args;
+        }()
+
+        if (req == nil) {
+            break;
         }
 
         reply = AppendEntriesReply{}
-        ok = rf.peers[nodeId].Call("Raft.AppendEntries", &args, &reply)
+        ok = rf.peers[nodeId].Call("Raft.AppendEntries", req, &reply)
     }
 }
 
@@ -393,9 +401,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
             }
 
             if (mismatchedIndex != -1) {
-                Assert(mismatchedIndex - 1 >= 0, "Node[%d] mismatchedIndex must not equal to 0", rf.me);
-                DPrintf("Node[%d] rollback logs from %d to %d", rf.me, rf.GetLastLogIndex(), mismatchedIndex - 1);
-                rf.Entries = rf.Entries[:mismatchedIndex - 1]
+                mismatchedTerm := Min(args.PrevLogTerm, rf.Entries[mismatchedIndex].Term);
+                for mismatchedIndex > 0 && rf.Entries[mismatchedIndex].Term >= mismatchedTerm {
+                    mismatchedIndex--;
+                }
+
+                Assert(mismatchedIndex >= 0, "Node[%d] mismatchedIndex must not equal to 0", rf.me);
+                DPrintf("Node[%d] rollback logs from %d to %d", rf.me, rf.GetLastLogIndex(), mismatchedIndex);
+                rf.Entries = rf.Entries[:mismatchedIndex + 1]
                 rf.commitIndex = Min(rf.commitIndex, rf.GetLastLogIndex())
             }
             Assert(rf.GetLastLogIndex() >= rf.commitIndex,
@@ -688,8 +701,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
     rf.voteACK = 0
     rf.applyCh = applyCh
 
-    rf.heartbeat_timeout = time.Duration(500 * time.Millisecond)
-    rf.election_timeout = time.Duration(1200 * time.Millisecond)
+    rf.heartbeat_timeout = time.Duration(300 * time.Millisecond)
+    rf.election_timeout = time.Duration(1000 * time.Millisecond)
 
     rf.NextIndex = make([]int, len(rf.peers));
     rf.MatchIndex = make([]int, len(rf.peers));

@@ -4,6 +4,8 @@ cd $DIR
 
 set -e
 
+export TRAVIS_CI=1
+
 ./test.sh TestInitialElection2A
 ./test.sh TestReElection2A
 
