@@ -547,7 +547,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
     DPrintf("Node[%d] Start sending commands (%d,%d,%s)",
             rf.me, entry.Term, entry.Index, entry.LogId);
 
-    // rf.sendAppendEntries(entry.Index);
+    rf.sendAppendEntries(entry.Index);
 
     return index, term, isLeader
 }
